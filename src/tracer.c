@@ -229,7 +229,7 @@ tracer_analyze_protocol(struct tracer_connection *connection,
 			struct tracer_message *message)
 {
 	uint32_t length, new_id, name;
-	int fd;
+	int fd, fdlen;
 	unsigned int i, count;
 	const char *signature;
 	char *type_name;
@@ -241,10 +241,21 @@ tracer_analyze_protocol(struct tracer_connection *connection,
 	struct tracer_analyzer *analyzer = tracer->analyzer;
 	struct tracer_interface *type;
 	struct tracer_interface **ptype;
+	static int unknown = 0;
 
 	wl_connection_copy(connection->wl_conn, buf, size);
-	if (target == NULL)
+	if (target == NULL) {
+		tracer_log("%s unknown@%u.unkown()",
+			connection->side == TRACER_CLIENT_SIDE ? "<=" : "=>", id);
+		tracer_log_end();
+
+		/* when this is set, it means that we don't have some xml file,
+		 * thus we won't show numbers of fds and will copy them
+		 * along with data */
+		unknown = 1;
+
 		goto finish;
+	}
 
 	count = strlen(message->signature);
 
@@ -295,9 +306,13 @@ tracer_analyze_protocol(struct tracer_connection *connection,
 			p = p + DIV_ROUNDUP(length, sizeof *p);
 			break;
 		case 'h':
+			if (unknown) {
+				tracer_log_cont("fd");
+				break;
+			}
+
 			wl_buffer_copy(&connection->wl_conn->fds_in,
-				       &fd,
-				       sizeof fd);
+				       &fd, sizeof fd);
 			connection->wl_conn->fds_in.tail += sizeof fd;
 			tracer_log_cont("fd %d", fd);
 			wl_connection_put_fd(peer->wl_conn, fd);
@@ -333,6 +348,18 @@ tracer_analyze_protocol(struct tracer_connection *connection,
 finish:
 	wl_connection_write(peer->wl_conn, buf, size);
 	wl_connection_consume(connection->wl_conn, size);
+
+	if (unknown) {
+		fdlen = wl_buffer_size(&connection->wl_conn->fds_in);
+		wl_buffer_copy(&connection->wl_conn->fds_in, buf, fdlen);
+		connection->wl_conn->fds_in.tail += fdlen;
+
+		fdlen /= sizeof(int32_t);
+		for (i = 0; i < fdlen; i++) {
+			fd = ((int32_t *) buf)[i];
+			wl_connection_put_fd(peer->wl_conn, fd);
+		}
+	}
 
 	return 0;
 }
